@@ -4,6 +4,7 @@ package decode
 
 import (
 	"fmt"
+	"image"
 	"os"
 
 	cabac "github.com/rcarmo/go-264/entropy/cabac"
@@ -154,7 +155,11 @@ func (d *Decoder) Decode(data []byte) ([]*frame.Frame, error) {
 				return nil, fmt.Errorf("slice: %w", err)
 			}
 			if f != nil {
-				frames = append(frames, f)
+				output, err := f.OutputView()
+				if err != nil {
+					return nil, fmt.Errorf("crop: %w", err)
+				}
+				frames = append(frames, output)
 				d.DPB.Add(f)
 			}
 
@@ -264,8 +269,21 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 	mbAlignedW := int(sps.PicWidthInMbs) * 16
 	mbAlignedH := int(sps.PicHeightInMapUnits) * 16
 	f := frame.NewFrame(mbAlignedW, mbAlignedH)
-	f.Width = sps.Width
-	f.Height = sps.Height
+	// Reconstruct and retain every coded sample, including cropped borders.
+	// Cropping changes presentation only, never prediction/reference geometry.
+	if sps.FrameCropping {
+		cropUnitX, cropUnitY := 1, 1
+		if sps.ChromaFormatIDC == 1 {
+			cropUnitX, cropUnitY = 2, 2
+		} else if sps.ChromaFormatIDC == 2 {
+			cropUnitX = 2
+		}
+		left, top := int(sps.CropLeft)*cropUnitX, int(sps.CropTop)*cropUnitY
+		f.CropRect = image.Rectangle{
+			Min: image.Pt(left, top),
+			Max: image.Pt(left+sps.Width, top+sps.Height),
+		}
+	}
 	f.IsIDR = unit.Type == nal.TypeSliceIDR
 	f.IsRef = unit.RefIDC > 0
 	f.FrameNum = int(hdr.FrameNum)
@@ -701,6 +719,8 @@ func (d *Decoder) decodeSlice(unit nal.Unit) (resultFrame *frame.Frame, resultEr
 						bmc.writeBackInterL0(mbX, mbY, mbSkip)
 						mbFFTypeCtx[mbIdx] = ffInterMBType(mbSkip)
 					}
+					// Skipped macroblocks inherit QP and still participate in deblocking.
+					mbQPCtx[mbIdx] = currentQP
 					skipRun--
 					decodeAfterSkipRun = skipRun == 0
 					continue

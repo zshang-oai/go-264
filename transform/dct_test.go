@@ -1,6 +1,57 @@
 package transform
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func TestIDCT4x4WideIntermediates(t *testing.T) {
+	type implementation struct {
+		name string
+		run  func([]int16)
+	}
+	implementations := []implementation{
+		{"scalar", IDCT4x4Scalar},
+		{"dispatch", IDCT4x4},
+	}
+	if HasAVX2 {
+		implementations = append(implementations, implementation{"amd64", func(b []int16) { IDCT4x4_AVX2(&b[0]) }})
+	} else if HasNEON {
+		implementations = append(implementations, implementation{"arm64", func(b []int16) { IDCT4x4_NEON(&b[0]) }})
+	}
+	check := func(name string, input, want [16]int16) {
+		t.Helper()
+		for _, impl := range implementations {
+			t.Run(name+"/"+impl.name, func(t *testing.T) {
+				got := input
+				impl.run(got[:])
+				if got != want {
+					t.Fatalf("got %v, want %v", got, want)
+				}
+			})
+		}
+	}
+	// These are primitive numeric-contract checks, not a claim that every
+	// arbitrary int16 coefficient block is a conforming encoded picture.
+	for _, dc := range []int16{-32768, -32736, -32735, -16320, -256, 0, 256, 16320, 32735, 32736, 32767} {
+		var input, want [16]int16
+		input[0] = dc
+		for i := range want {
+			want[i] = int16((int32(dc) + 32) >> 6)
+		}
+		check(fmt.Sprintf("dc_%d", dc), input, want)
+	}
+	var input, want [16]int16
+	input[4], input[12] = 32767, 32767
+	// The second-pass odd terms are -16384 and 49150. They must remain
+	// wide until the rounded shift, rather than wrapping 49150 to int16.
+	for row, value := range []int16{768, -256, 256, -768} {
+		for x := 0; x < 4; x++ {
+			want[row*4+x] = value
+		}
+	}
+	check("second_pass_odd_terms", input, want)
+}
 
 func TestIDCT4x4(t *testing.T) {
 	// The H.264 integer transform doesn't roundtrip alone —

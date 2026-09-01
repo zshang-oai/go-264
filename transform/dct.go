@@ -14,7 +14,7 @@ package transform
 // Forward: Y = Cf * X * Cf^T (with post-scaling)
 // Inverse: X = Ci^T * Y * Ci (with pre-scaling)
 //
-// All arithmetic is 16-bit integer.
+// Blocks store int16 values; inverse-transform intermediates use wider integers.
 
 // IDCT4x4 performs the inverse 4×4 integer transform (in-place).
 // Input: dequantized coefficients in block[0:16].

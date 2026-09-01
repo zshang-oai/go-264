@@ -1,6 +1,65 @@
 package transform
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func TestIDCT8x8WideIntermediates(t *testing.T) {
+	type implementation struct {
+		name string
+		run  func([]int16)
+	}
+	implementations := []implementation{
+		{"scalar", IDCT8x8Scalar},
+		{"dispatch", IDCT8x8},
+	}
+	if HasAVX2 || HasNEON {
+		implementations = append(implementations, implementation{"architecture_entry", func(b []int16) { IDCT8x8_ASM(&b[0]) }})
+	}
+	check := func(name string, input, want [64]int16) {
+		t.Helper()
+		for _, impl := range implementations {
+			t.Run(name+"/"+impl.name, func(t *testing.T) {
+				got := input
+				impl.run(got[:])
+				if got != want {
+					t.Fatalf("got %v, want %v", got, want)
+				}
+			})
+		}
+	}
+	// Match the established assembly storage contract: int16 between passes,
+	// wide butterfly expressions and rounding. These extremes test the API,
+	// not whether arbitrary coefficient blocks are legal bitstream content.
+	for _, dc := range []int16{-32768, -32736, -32735, -16320, -256, 0, 256, 16320, 32735, 32736, 32767} {
+		var input, want [64]int16
+		input[0] = dc
+		for i := range want {
+			want[i] = int16((int32(dc) + 32) >> 6)
+		}
+		check(fmt.Sprintf("dc_%d", dc), input, want)
+	}
+	var input, want [64]int16
+	input[7] = 32767
+	// First-pass odd terms include -49150 and 40958. Shift those wide
+	// terms before narrowing the pass output back into int16 storage.
+	row := [8]int16{192, -384, -384, 256, -256, 384, 384, -192}
+	for y := 0; y < 8; y++ {
+		copy(want[y*8:], row[:])
+	}
+	check("first_pass_odd_terms", input, want)
+	input = [64]int16{}
+	input[56] = 32767
+	// Here the first pass stays in range; the second pass must retain its
+	// wide odd terms through the final +32 and arithmetic right shift.
+	for y, value := range []int16{192, -384, 640, -768, 768, -640, 384, -192} {
+		for x := 0; x < 8; x++ {
+			want[y*8+x] = value
+		}
+	}
+	check("second_pass_odd_terms", input, want)
+}
 
 func TestIDCT8x8_DC(t *testing.T) {
 	block := [64]int16{}
@@ -83,30 +142,35 @@ func BenchmarkIDCT8x8(b *testing.B) {
 }
 
 func TestIDCT8x8_ASMvsScalar(t *testing.T) {
-	if !HasAVX2 {
-		t.Skip("no AVX2")
+	if !HasAVX2 && !HasNEON {
+		t.Skip("no architecture-specific entry point")
 	}
 	for seed := 0; seed < 50; seed++ {
-		var blockASM, blockScalar [64]int16
+		var blockASM, blockScalar, blockDispatched [64]int16
 		for i := range blockASM {
 			// Use realistic dequantized coefficient range (fits in int16 after butterfly)
 			blockASM[i] = int16((seed*3 + i*5 - 160) % 500)
 		}
 		copy(blockScalar[:], blockASM[:])
+		copy(blockDispatched[:], blockASM[:])
 		IDCT8x8_ASM(&blockASM[0])
 		IDCT8x8Scalar(blockScalar[:])
+		IDCT8x8(blockDispatched[:])
 		for i := range blockASM {
 			if blockASM[i] != blockScalar[i] {
 				t.Fatalf("seed=%d pos=%d: asm=%d scalar=%d", seed, i, blockASM[i], blockScalar[i])
 			}
+			if blockDispatched[i] != blockScalar[i] {
+				t.Fatalf("seed=%d pos=%d: dispatched=%d scalar=%d", seed, i, blockDispatched[i], blockScalar[i])
+			}
 		}
 	}
-	t.Log("IDCT8x8 ASM matches scalar for 50 inputs ✓")
+	t.Log("IDCT8x8 architecture entry point and dispatch match scalar for 50 inputs")
 }
 
 func TestDCT8x8_ASMvsScalar(t *testing.T) {
-	if !HasAVX2 {
-		t.Skip("no AVX2")
+	if !HasAVX2 && !HasNEON {
+		t.Skip("no architecture-specific entry point")
 	}
 	for seed := 0; seed < 50; seed++ {
 		var blockASM, blockScalar [64]int16
