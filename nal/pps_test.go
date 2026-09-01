@@ -1,6 +1,173 @@
 package nal
 
-import "testing"
+import (
+	"encoding/hex"
+	"errors"
+	"testing"
+)
+
+func TestParameterSetsRejectTruncation(t *testing.T) {
+	cases := []struct {
+		name, hex string
+		parse     func([]byte) error
+	}{
+		{"SPS", "42c01ed90141fb011000000300100000030320f162e480", func(b []byte) error { _, err := ParseSPS(b); return err }},
+		{"PPS", "cb83cb20", func(b []byte) error { _, err := ParsePPS(b); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := hex.DecodeString(tc.hex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.parse(data); err != nil {
+				t.Fatalf("valid parameter set: %v", err)
+			}
+			for n := 0; n < len(data); n++ {
+				if err := tc.parse(data[:n]); err == nil {
+					t.Fatalf("accepted prefix %d/%d", n, len(data))
+				}
+			}
+		})
+	}
+}
+
+func validationSPSPayload(s SPS) []byte {
+	var w ppsBitWriter
+	for _, b := range []byte{66, 0, 10} {
+		for bit := 7; bit >= 0; bit-- {
+			w.bit(b >> uint(bit))
+		}
+	}
+	w.ue(s.SPSID)
+	w.ue(s.Log2MaxFrameNum - 4)
+	w.ue(s.PicOrderCntType)
+	if s.PicOrderCntType == 0 {
+		w.ue(s.Log2MaxPocLsb - 4)
+	}
+	w.ue(s.MaxNumRefFrames)
+	w.bit(0)
+	w.ue(s.PicWidthInMbs - 1)
+	w.ue(s.PicHeightInMapUnits - 1)
+	w.bit(1)
+	w.bit(1)
+	if s.FrameCropping {
+		w.bit(1)
+		w.ue(s.CropLeft)
+		w.ue(s.CropRight)
+		w.ue(s.CropTop)
+		w.ue(s.CropBottom)
+	} else {
+		w.bit(0)
+	}
+	w.bit(0) // no VUI
+	w.rbspTrailingBits()
+	return w.bytes()
+}
+
+func TestSPSRejectsOutOfRangeFields(t *testing.T) {
+	base := SPS{SPSID: 0, Log2MaxFrameNum: 4, PicOrderCntType: 0, Log2MaxPocLsb: 4, MaxNumRefFrames: 1, PicWidthInMbs: 1, PicHeightInMapUnits: 1}
+	for _, tc := range []struct {
+		name string
+		edit func(*SPS)
+	}{
+		{"id", func(s *SPS) { s.SPSID = 32 }},
+		{"frame_num_bits", func(s *SPS) { s.Log2MaxFrameNum = 17 }},
+		{"poc_type", func(s *SPS) { s.PicOrderCntType = 3 }},
+		{"poc_bits", func(s *SPS) { s.Log2MaxPocLsb = 17 }},
+		{"refs", func(s *SPS) { s.MaxNumRefFrames = 17 }},
+		{"width", func(s *SPS) { s.PicWidthInMbs = maxSyntaxMacroblocks + 1 }},
+		{"area", func(s *SPS) { s.PicWidthInMbs = 2048; s.PicHeightInMapUnits = 2048 }},
+		{"crop", func(s *SPS) { s.FrameCropping = true; s.CropRight = 8 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.edit(&s)
+			if _, err := ParseSPS(validationSPSPayload(s)); !errors.Is(err, ErrInvalidSyntax) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+	if _, err := ParseSPS(validationSPSPayload(base)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validationPPSPayload(p PPS) []byte {
+	var w ppsBitWriter
+	w.ue(p.PPSID)
+	w.ue(p.SPSID)
+	w.bit(0)
+	w.bit(0)
+	w.ue(p.NumSliceGroups - 1)
+	w.ue(p.NumRefIdxL0Active - 1)
+	w.ue(p.NumRefIdxL1Active - 1)
+	w.bit(0)
+	w.bit(uint8(p.WeightedBipredIDC >> 1))
+	w.bit(uint8(p.WeightedBipredIDC))
+	w.se(p.PicInitQP - 26)
+	w.se(p.PicInitQS - 26)
+	w.se(p.ChromaQPIndexOffset)
+	w.bit(0)
+	w.bit(0)
+	w.bit(0)
+	w.bit(0)
+	w.bit(0)
+	w.se(p.SecondChromaQPIndexOffset)
+	w.rbspTrailingBits()
+	return w.bytes()
+}
+
+func TestPPSRejectsOutOfRangeFields(t *testing.T) {
+	base := PPS{NumSliceGroups: 1, NumRefIdxL0Active: 1, NumRefIdxL1Active: 1, PicInitQP: 26, PicInitQS: 26}
+	for _, tc := range []struct {
+		name string
+		edit func(*PPS)
+	}{
+		{"id", func(p *PPS) { p.PPSID = 256 }},
+		{"sps_id", func(p *PPS) { p.SPSID = 32 }},
+		{"groups", func(p *PPS) { p.NumSliceGroups = 9 }},
+		{"refs", func(p *PPS) { p.NumRefIdxL0Active = 33 }},
+		{"weighted_bipred", func(p *PPS) { p.WeightedBipredIDC = 3 }},
+		{"qp_high", func(p *PPS) { p.PicInitQP = 52 }},
+		{"qp_low", func(p *PPS) { p.PicInitQP = -37 }},
+		{"qs", func(p *PPS) { p.PicInitQS = 52 }},
+		{"chroma_qp", func(p *PPS) { p.ChromaQPIndexOffset = 13 }},
+		{"second_chroma_qp", func(p *PPS) { p.SecondChromaQPIndexOffset = -13 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			tc.edit(&p)
+			if _, err := ParsePPS(validationPPSPayload(p)); !errors.Is(err, ErrInvalidSyntax) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+	if _, err := ParsePPS(validationPPSPayload(base)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParameterDrivenLoopBounds(t *testing.T) {
+	var w ppsBitWriter
+	w.ue(0)
+	w.ue(0)
+	w.bit(0)
+	w.bit(0)
+	w.ue(1)
+	w.ue(6)
+	w.ue(maxSyntaxMacroblocks) // pic_size_in_map_units_minus1 is over the work budget
+	if _, err := ParsePPS(w.bytes()); !errors.Is(err, ErrInvalidSyntax) {
+		t.Fatalf("map size: %v", err)
+	}
+	w = ppsBitWriter{}
+	w.ue(32)
+	r := NewReader(w.bytes())
+	parseHRD(r)
+	if !errors.Is(r.Err(), ErrInvalidSyntax) {
+		t.Fatalf("HRD cpb count: %v", r.Err())
+	}
+}
 
 type ppsBitWriter struct {
 	bits []uint8

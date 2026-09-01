@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestCheckedAnnexBRejectsMalformedFramingAndHeaders(t *testing.T) {
+	for _, data := range [][]byte{
+		{0x67, 0x80}, {0, 0, 1}, {9, 0, 0, 1, 0x67, 0x80},
+		{0, 0, 1, 0xe7, 0x80}, {0, 0, 1, 0x07, 0x80},
+		{0, 0, 1, 0x05, 0x80}, // IDR with nal_ref_idc == 0
+		{0, 0, 1, 0x65, 0x80, 0, 0, 1},
+	} {
+		if _, err := SplitNALUnitsChecked(data); err == nil {
+			t.Fatalf("malformed Annex B accepted: %x", data)
+		}
+	}
+	if units, err := SplitNALUnitsChecked([]byte{0, 0, 1, 0x09, 0x10}); err != nil || len(units) != 1 {
+		t.Fatalf("valid AUD: %v", err)
+	}
+}
+
 func TestSplitNALUnits(t *testing.T) {
 	// Minimal Annex B stream: start code + SPS + start code + PPS
 	data := []byte{

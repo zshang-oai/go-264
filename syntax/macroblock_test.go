@@ -10,14 +10,14 @@ import (
 
 func TestCombineNC(t *testing.T) {
 	cases := []struct{ nA, nB, want int }{
-		{-1, -1, 0},  // both unavailable → 0
-		{-1, 4, 4},   // only nB available → nB
-		{6, -1, 6},   // only nA available → nA
-		{4, 6, 5},    // both available → (4+6+1)/2 = 5
-		{0, 0, 0},    // both zero → 0
-		{3, 3, 3},    // equal → 3
-		{4, 5, 4},    // (4+5+1)/2 = 5 → 5? no: (9+1)>>1=5. Wait (4+5+1)=10>>1=5
-		{1, 2, 1},    // (1+2+1)/2=2 → 2? (3+1)>>1=2
+		{-1, -1, 0}, // both unavailable → 0
+		{-1, 4, 4},  // only nB available → nB
+		{6, -1, 6},  // only nA available → nA
+		{4, 6, 5},   // both available → (4+6+1)/2 = 5
+		{0, 0, 0},   // both zero → 0
+		{3, 3, 3},   // equal → 3
+		{4, 5, 4},   // (4+5+1)/2 = 5 → 5? no: (9+1)>>1=5. Wait (4+5+1)=10>>1=5
+		{1, 2, 1},   // (1+2+1)/2=2 → 2? (3+1)>>1=2
 	}
 	// Rebuild expected correctly
 	correct := []int{0, 4, 6, 5, 0, 3, 5, 2}
@@ -62,8 +62,8 @@ func TestComputeNC4x4Ctx_CrossMB(t *testing.T) {
 	nz := make([]int, 16)
 	leftNZ := &[16]int{}
 	topNZ := &[16]int{}
-	leftNZ[BlkXYToIdx[0][3]] = 8  // right-edge of left MB, row 0
-	topNZ[BlkXYToIdx[3][0]] = 4   // bottom-edge of top MB, col 0
+	leftNZ[BlkXYToIdx[0][3]] = 8 // right-edge of left MB, row 0
+	topNZ[BlkXYToIdx[3][0]] = 4  // bottom-edge of top MB, col 0
 
 	// blkIdx=0: col=0, row=0 → crosses left MB (leftNZ) and top MB (topNZ)
 	got := computeNC4x4Ctx(0, nz, leftNZ, topNZ)
@@ -127,12 +127,15 @@ func TestDecodeCBPIntra_Table(t *testing.T) {
 			t.Errorf("decodeCBPIntra(codeNum=%d)=%d want %d", tc.codeNum, got, tc.wantCBP)
 		}
 	}
-	// Out of range codeNum (>= 48) → returns 0
+	// Out of range codeNum (>= 48) latches an error rather than decoding a CBP.
 	buf := encodeUE(48)
 	r := nal.NewReader(buf)
 	got := decodeCBPIntra(r)
 	if got != 0 {
 		t.Errorf("decodeCBPIntra(codeNum=48)=%d want 0", got)
+	}
+	if r.Err() == nil {
+		t.Fatal("invalid CBP accepted")
 	}
 }
 
@@ -199,12 +202,12 @@ func TestDecodeMBIntraWithType_I16x16_Variants(t *testing.T) {
 		wantPredMode    int8
 		wantCBPLumaFlag bool // whether cbpLuma=15
 	}{
-		{1, 0, false},   // pred=0, cbp=0
-		{2, 1, false},   // pred=1, cbp=0
-		{5, 0, false},   // pred=0, cbpChroma=1, cbpLuma=0
-		{13, 0, true},   // pred=0, cbpChroma=0, cbpLuma=15
-		{17, 0, true},   // pred=0, cbpChroma=1, cbpLuma=15
-		{24, 3, true},   // pred=3, cbpChroma=2, cbpLuma=15
+		{1, 0, false}, // pred=0, cbp=0
+		{2, 1, false}, // pred=1, cbp=0
+		{5, 0, false}, // pred=0, cbpChroma=1, cbpLuma=0
+		{13, 0, true}, // pred=0, cbpChroma=0, cbpLuma=15
+		{17, 0, true}, // pred=0, cbpChroma=1, cbpLuma=15
+		{24, 3, true}, // pred=3, cbpChroma=2, cbpLuma=15
 	}
 	for _, tc := range cases {
 		// Build minimal bitstream: just chromaMode=UE(0)="1"

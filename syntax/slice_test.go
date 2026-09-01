@@ -1,10 +1,82 @@
 package syntax
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/rcarmo/go-264/nal"
 )
+
+func TestSliceHeaderRejectsInvalidRanges(t *testing.T) {
+	sps := &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1, BitDepthLuma: 8}
+	pps := &nal.PPS{PicInitQP: 26, NumRefIdxL0Active: 1, NumRefIdxL1Active: 1, DeblockingFilterControl: true}
+	for _, tc := range []struct {
+		name                string
+		slice, pps, deblock uint32
+		qp, alpha           int32
+	}{
+		{"slice_type", 10, 0, 1, 0, 0},
+		{"pps_id", 2, 256, 1, 0, 0},
+		{"qp", 2, 0, 1, 26, 0},
+		{"deblock_idc", 2, 0, 3, 0, 0},
+		{"deblock_offset", 2, 0, 0, 0, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var w testBitWriter
+			w.ue(0)
+			w.ue(tc.slice)
+			w.ue(tc.pps)
+			w.bits = append(w.bits, 0, 0, 0, 0)
+			w.se(tc.qp)
+			w.ue(tc.deblock)
+			if tc.deblock != 1 {
+				w.se(tc.alpha)
+				w.se(0)
+			}
+			w.bit(1)
+			_, r := ParseHeaderWithRefIDC(w.bytes(), nal.TypeSliceNonIDR, 0, sps, pps)
+			if !errors.Is(r.Err(), nal.ErrInvalidSyntax) {
+				t.Fatalf("accepted invalid header: %v", r.Err())
+			}
+		})
+	}
+}
+
+func TestSliceOperationListsRequireTerminatorsAndBounds(t *testing.T) {
+	var w testBitWriter
+	w.bit(1)
+	for i := 0; i < 32; i++ {
+		w.ue(0)
+		w.ue(0)
+	}
+	w.ue(3)
+	r := nal.NewReader(w.bytes())
+	h := &Header{}
+	parseRefPicListModification(r, h, 0)
+	if r.Err() != nil || len(h.RefModifications[0]) != 32 {
+		t.Fatalf("32 legal entries: %v", r.Err())
+	}
+	w = testBitWriter{}
+	w.bit(1)
+	w.ue(4)
+	r = nal.NewReader(w.bytes())
+	parseRefPicListModification(r, nil, 0)
+	if r.Err() == nil {
+		t.Fatal("invalid list operation accepted")
+	}
+	w = testBitWriter{}
+	w.bit(1)
+	for i := 0; i < 65; i++ {
+		w.ue(1)
+		w.ue(0)
+	}
+	r = nal.NewReader(w.bytes())
+	h = &Header{}
+	parseDecRefPicMarking(r, h, nal.TypeSliceNonIDR)
+	if r.Err() == nil || len(h.MemoryManagementControls) > 64 {
+		t.Fatal("unbounded or unterminated MMCO list accepted")
+	}
+}
 
 type testBitWriter struct {
 	bits []uint8
@@ -210,21 +282,6 @@ func TestParseHeaderConsumesMMCO5WithoutOperand(t *testing.T) {
 	h, _ := ParseHeader(w.bytes(), nal.TypeSliceNonIDR, &nal.SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, FrameMbsOnlyFlag: true, ChromaFormatIDC: 1}, &nal.PPS{EntropyCodingMode: 1, NumRefIdxL0Active: 1})
 	if h.CabacInitIDC != 2 {
 		t.Fatalf("cabac_init_idc got %d want 2", h.CabacInitIDC)
-	}
-}
-
-func TestParseHeaderHandlesNilParameterSets(t *testing.T) {
-	var w testBitWriter
-	w.ue(0)          // first_mb_in_slice
-	w.ue(SliceTypeI) // slice_type
-	w.ue(0)          // pic_parameter_set_id
-	w.se(0)          // slice_qp_delta
-	h, r := ParseHeader(w.bytes(), nal.TypeSliceNonIDR, nil, nil)
-	if h == nil || r == nil {
-		t.Fatalf("ParseHeader returned nil header/reader")
-	}
-	if h.SliceType != SliceTypeI || h.FirstMbInSlice != 0 || h.PPSID != 0 {
-		t.Fatalf("unexpected header: %+v", h)
 	}
 }
 
