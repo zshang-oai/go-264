@@ -21,31 +21,32 @@ func shortTermPicNum(frameNum, currentFrameNum, maxFrameNum int) int {
 	return frameNum
 }
 
-// validateShortTermReferenceMarking checks a reference picture's retention
-// instructions before decoding it, including the allowed picture-number
-// differences. It accepts short-term removal and MMCO 5 reset, validates their
-// combination, and rejects unsupported long-term operations.
-// Target existence and space for the new reference are checked at picture
-// completion, as commands change the candidate reference store.
-func validateShortTermReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
-	if hdr.LongTermReference {
-		return fmt.Errorf("unsupported long-term IDR reference marking")
-	}
-	reset := false
+// validateReferenceMarking checks picture-number differences and the allowed
+// combinations and ordering of retention commands (H.264 7.4.3.3). Target
+// existence and long-term index limits depend on earlier commands, so they
+// are checked as the commands execute against staged reference state.
+func validateReferenceMarking(hdr *syntax.Header, maxFrameNum int) error {
+	var seen [7]bool
 	for _, mmco := range hdr.MemoryManagementControls {
 		switch mmco.Op {
-		case 1:
+		case 1, 3:
 			if uint64(mmco.DifferenceOfPicNumsMinus1) >= uint64(maxFrameNum) {
-				return fmt.Errorf("MMCO 1 reference difference %d exceeds MaxPicNum %d", uint64(mmco.DifferenceOfPicNumsMinus1)+1, maxFrameNum)
+				return fmt.Errorf("MMCO %d reference difference %d exceeds MaxPicNum %d", mmco.Op, uint64(mmco.DifferenceOfPicNumsMinus1)+1, maxFrameNum)
 			}
-		case 5:
-			if reset || len(hdr.MemoryManagementControls) != 1 {
-				return fmt.Errorf("MMCO 5 must occur once and cannot coexist with short-term MMCO 1")
-			}
-			reset = true
+		case 2, 4, 5, 6:
 		default:
-			return fmt.Errorf("unsupported long-term reference marking MMCO %d", mmco.Op)
+			return fmt.Errorf("invalid reference marking MMCO %d", mmco.Op)
 		}
+		if mmco.Op >= 4 && seen[mmco.Op] {
+			return fmt.Errorf("MMCO %d occurs more than once", mmco.Op)
+		}
+		if mmco.Op == 5 && seen[6] {
+			return fmt.Errorf("MMCO 5 must not follow MMCO 6")
+		}
+		seen[mmco.Op] = true
+	}
+	if seen[5] && (seen[1] || seen[2] || seen[3]) {
+		return fmt.Errorf("MMCO 5 must not coexist with MMCO 1, 2 or 3")
 	}
 	return nil
 }
