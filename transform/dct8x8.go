@@ -109,13 +109,12 @@ func Dequant8x8(block []int16, qp int) {
 	for i := 0; i < 64; i++ {
 		if block[i] != 0 {
 			v := int32(dequantV8[qpMod6][posToV8[i]])
-			// FFmpeg's H.264 8×8 residual path feeds h264_idct8_add with
-			// coefficients in a scale domain four times smaller than the raw
-			// Table 8-15 product below. Division is intentional: Go truncates a
-			// negative half-step toward zero, matching FFmpeg's dequant table
-			// (an arithmetic right shift would round it toward -infinity).
+			// H.264 8x8 inverse scaling rounds before the right shift.
+			// For the flat scaling list, (level * LevelScale << (QP/6))
+			// is four times the IDCT input. Preserve signed rounding:
+			// truncating division loses positive half-steps (e.g. 66 -> 17).
 			scaled := int32(block[i]) * v << qpDiv6
-			block[i] = int16(scaled / 4)
+			block[i] = int16((scaled + 2) >> 2)
 		}
 	}
 }
