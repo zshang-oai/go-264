@@ -121,7 +121,7 @@ func TestPReferenceListRejectsUnusableModifications(t *testing.T) {
 		{"unfilled_active_entry", refs, 3, nil, "entry 2"},
 		{"missing_target", refs, 1, []syntax.RefPicListModification{{Op: 0, Val: 0}}, "missing frame_num 2"},
 		{"non_existing_target", append(append([]*frame.Frame(nil), refs...), missing), 1, []syntax.RefPicListModification{{Op: 0, Val: 0}}, "non-existing frame_num 2"},
-		{"long_term_deferred", refs, 1, []syntax.RefPicListModification{{Op: 2}}, "unsupported"},
+		{"missing_long_term", refs, 1, []syntax.RefPicListModification{{Op: 2}}, "missing long_term_pic_num"},
 		{"too_many_modifications", refs, 1, []syntax.RefPicListModification{{Op: 0}, {Op: 1}}, "modifications"},
 		{"oversized_difference", refs, 1, []syntax.RefPicListModification{{Op: 0, Val: 32}}, "MaxPicNum"},
 		{"overflow_difference", refs, 1, []syntax.RefPicListModification{{Op: 0, Val: ^uint32(0)}}, "MaxPicNum"},
@@ -220,6 +220,48 @@ func TestStageFrameNumGapsNoGapDoesNotAdvancePrevRef(t *testing.T) {
 		if refs[0] == nil {
 			t.Fatal("staged slice aliases committed slice")
 		}
+	}
+}
+
+func TestPReferenceListLongTermOrderAndModifications(t *testing.T) {
+	short := shortRefs(31, 0)
+	long0 := &frame.Frame{IsRef: true, IsLongTerm: true, LongTermFrameIdx: 0, FrameNum: 0}
+	long2 := &frame.Frame{IsRef: true, IsLongTerm: true, LongTermFrameIdx: 2, FrameNum: 31}
+	refs := []*frame.Frame{long2, short[0], long0, short[1]}
+	list, err := buildPReferenceList(refs, 1, 32, 4, nil)
+	if err != nil || !reflect.DeepEqual(list, []*frame.Frame{short[1], short[0], long0, long2}) {
+		t.Fatalf("mixed default list: %v, %v", list, err)
+	}
+	// Op2 neither changes PicNumPred nor deduplicates earlier repetitions.
+	mods := []syntax.RefPicListModification{{Op: 0, Val: 1}, {Op: 2, Val: 2}, {Op: 1}, {Op: 2, Val: 2}}
+	list, err = buildPReferenceList(refs, 1, 32, 4, mods)
+	if err != nil || !reflect.DeepEqual(list, []*frame.Frame{short[0], long2, short[1], long2}) {
+		t.Fatalf("mixed modified list: %v, %v", list, err)
+	}
+	list, err = buildPReferenceList([]*frame.Frame{long0}, 1, 32, 2, []syntax.RefPicListModification{{Op: 2}, {Op: 2}})
+	if err != nil || !reflect.DeepEqual(list, []*frame.Frame{long0, long0}) {
+		t.Fatalf("long-term-only repeated list: %v, %v", list, err)
+	}
+	if _, err = buildPReferenceList([]*frame.Frame{long0}, 1, 32, 1, []syntax.RefPicListModification{{Op: 0}}); err == nil {
+		t.Fatal("short-term modification selected matching long-term frame_num")
+	}
+	if _, err = buildPReferenceList([]*frame.Frame{long0}, 1, 32, 1, []syntax.RefPicListModification{{Op: 2, Val: ^uint32(0)}}); err == nil {
+		t.Fatal("oversized long-term index accepted")
+	}
+}
+
+func TestGapSlidingPreservesLongTermReferences(t *testing.T) {
+	long := &frame.Frame{IsRef: true, IsLongTerm: true, LongTermFrameIdx: 0, FrameNum: 2}
+	short := shortRefs(0)[0]
+	staged, next, err := stageFrameNumGaps([]*frame.Frame{short, long}, 0, 3, 32, 2, true)
+	if err != nil || next != 2 || len(staged) != 2 || staged[0] != long || !staged[1].NonExisting || staged[1].FrameNum != 2 {
+		t.Fatalf("long-term frame_num may coincide with inferred short term: %+v, %d, %v", staged, next, err)
+	}
+	if _, _, err = stageFrameNumGaps([]*frame.Frame{long}, 0, 2, 32, 1, true); err == nil || !strings.Contains(err.Error(), "no short-term") {
+		t.Fatalf("all-long-term full DPB: %v", err)
+	}
+	if long.FrameNum != 2 || !long.IsLongTerm || !short.IsRef {
+		t.Fatal("sliding mutated original metadata")
 	}
 }
 

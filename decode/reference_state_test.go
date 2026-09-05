@@ -135,6 +135,10 @@ func TestLaterSliceCannotBypassReferenceGates(t *testing.T) {
 			s.header.SliceType = syntax.SliceTypeP
 		}, "max_num_ref_frames"},
 		{"long term IDR", func(d *Decoder, s *sliceState) { s.header.LongTermReference = true }, "long-term"},
+		{"B with long-term reference", func(d *Decoder, s *sliceState) {
+			d.picture.referenceFrames = []*frame.Frame{{IsRef: true, IsLongTerm: true}}
+			s.header.SliceType = syntax.SliceTypeB
+		}, "B pictures with long-term"},
 		{"B across inferred gaps", func(d *Decoder, s *sliceState) {
 			d.picture.referenceFrames = []*frame.Frame{{IsRef: true, NonExisting: true}}
 			s.header.SliceType = syntax.SliceTypeB

@@ -73,7 +73,7 @@ func (d *Decoder) commitPictureReferences(p *pictureState) error {
 				target := (int(h.FrameNum) - int(op.DifferenceOfPicNumsMinus1) - 1 + maxFrameNum) % maxFrameNum
 				found := -1
 				for i, ref := range refs {
-					if ref.IsRef && ref.FrameNum == target {
+					if ref.IsRef && !ref.IsLongTerm && ref.FrameNum == target {
 						found = i
 						break
 					}
@@ -93,7 +93,11 @@ func (d *Decoder) commitPictureReferences(p *pictureState) error {
 				return fmt.Errorf("adaptive reference marking leaves no slot for current picture")
 			}
 		} else {
-			refs = slidingWindowReferences(refs, int(h.FrameNum), maxFrameNum, int(p.sps.MaxNumRefFrames))
+			var err error
+			refs, err = slidingWindowReferences(refs, int(h.FrameNum), maxFrameNum, int(p.sps.MaxNumRefFrames))
+			if err != nil {
+				return err
+			}
 		}
 		refs = append(refs, current)
 		p.frame = current
@@ -123,6 +127,9 @@ func validateSliceReferences(s *sliceState, refs []*frame.Frame) error {
 	}
 	if s.header.SliceType == syntax.SliceTypeB {
 		for _, ref := range refs {
+			if ref.IsLongTerm || ref.HasLongTermReferences {
+				return fmt.Errorf("B pictures with long-term references require long-term direct-prediction support")
+			}
 			if ref.NonExisting {
 				return fmt.Errorf("B pictures across frame_num gaps require non-existing-picture POC support")
 			}
